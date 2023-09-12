@@ -1,11 +1,15 @@
 import json
 import os
+import random
+import re
 import logging
 import requests
+import string
 import openai
 from azure.identity import DefaultAzureCredential
 from flask import Flask, Response, request, jsonify, send_from_directory
 from dotenv import load_dotenv
+from openai.util import convert_to_dict
 
 from backend.auth.auth_utils import get_authenticated_user_details
 from backend.history.cosmosdbservice import CosmosConversationClient
@@ -27,6 +31,8 @@ def favicon():
 def assets(path):
     return send_from_directory("static/assets", path)
 
+## Custom azure function Integration
+CUSTOM_AZURE_FUNCTION = os.environ.get("CUSTOM_AZURE_FUNCTION")
 
 # ACS Integration Settings
 AZURE_SEARCH_SERVICE = os.environ.get("AZURE_SEARCH_SERVICE")
@@ -260,7 +266,6 @@ def conversation_with_data(request_body):
     else:
         return Response(stream_with_data(body, headers, endpoint, history_metadata), mimetype='text/event-stream')
 
-
 def stream_without_data(response, history_metadata={}):
     responseText = ""
     for line in response:
@@ -283,18 +288,17 @@ def stream_without_data(response, history_metadata={}):
         }
         yield format_as_ndjson(response_obj)
 
+## start pat of code that has been changed 
 
 def conversation_without_data(request_body):
-    openai.api_type = "azure"
-    openai.api_base = AZURE_OPENAI_ENDPOINT if AZURE_OPENAI_ENDPOINT else f"https://{AZURE_OPENAI_RESOURCE}.openai.azure.com/"
-    openai.api_version = "2023-03-15-preview"
-    openai.api_key = AZURE_OPENAI_KEY
+# Check if CUSTOM_AZURE_FUNCTION is defined
+   if CUSTOM_AZURE_FUNCTION:
 
     request_messages = request_body["messages"]
     messages = [
         {
             "role": "system",
-            "content": AZURE_OPENAI_SYSTEM_MESSAGE
+            "content": ' '
         }
     ]
 
@@ -303,17 +307,38 @@ def conversation_without_data(request_body):
             "role": message["role"] ,
             "content": message["content"]
         })
+## here under we addapt the input message we use in our azure function to the require format of the azure code
+    # Extract the content of the last message in 'messages'
+    payload = {"name": messages[-1]["content"]}
 
-    response = openai.ChatCompletion.create(
-        engine=AZURE_OPENAI_MODEL,
-        messages = messages,
-        temperature=float(AZURE_OPENAI_TEMPERATURE),
-        max_tokens=int(AZURE_OPENAI_MAX_TOKENS),
-        top_p=float(AZURE_OPENAI_TOP_P),
-        stop=AZURE_OPENAI_STOP_SEQUENCE.split("|") if AZURE_OPENAI_STOP_SEQUENCE else None,
-        stream=SHOULD_STREAM
-    )
+    # Send a GET request to CUSTOM_AZURE_FUNCTION with the 'payload' as JSON
+    azure_func_answer = json.loads(requests.get(CUSTOM_AZURE_FUNCTION, json=payload).text)["answer"]
+    # Split 'azure_func_answer' into chunks using regular expressions
+    azure_func_answer_chunks = re.findall(r'\S+\s*|\s+', azure_func_answer)
 
+    created = random.randint(10**(10-1), 10**10 - 1)
+    id = "chatcmpl-" + ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(29))
+    response =[]
+
+    for chunk in azure_func_answer_chunks:
+            dic = {
+                "choices": [
+                    {
+                        "delta": {
+                            "content": chunk
+                        },
+                        "finish_reason": None,
+                        "index": 0
+                    }
+                ],
+                "created": created,
+                "id": id,
+                "model": "gpt-35-turbo",
+                "object": "chat.completion.chunk",
+                "usage": None
+            }
+            response.append(dic)
+  
     history_metadata = request_body.get("history_metadata", {})
 
     if not SHOULD_STREAM:
@@ -334,7 +359,7 @@ def conversation_without_data(request_body):
         return jsonify(response_obj), 200
     else:
         return Response(stream_without_data(response, history_metadata), mimetype='text/event-stream')
-
+## end of code that has been updated
 
 @app.route("/conversation", methods=["GET", "POST"])
 def conversation():
