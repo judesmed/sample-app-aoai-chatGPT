@@ -307,14 +307,117 @@ def conversation_without_data(request_body):
             "role": message["role"] ,
             "content": message["content"]
         })
+
+####
+
+
+###
 ## here under we addapt the input message we use in our azure function to the require format of the azure code
     # Extract the content of the last message in 'messages'
-    payload = {"name": messages[-1]["content"]}
 
-    # Send a GET request to CUSTOM_AZURE_FUNCTION with the 'payload' as JSON
-    azure_func_answer = json.loads(requests.get(CUSTOM_AZURE_FUNCTION, json=payload).text)["answer"]
-    # Split 'azure_func_answer' into chunks using regular expressions
-    azure_func_answer_chunks = re.findall(r'\S+\s*|\s+', azure_func_answer)
+    import logging
+    import pymongo
+    from langchain.embeddings.openai import OpenAIEmbeddings
+    from langchain import PromptTemplate
+    from langchain.chat_models import AzureChatOpenAI
+    from langchain.schema import HumanMessage, SystemMessage
+ 
+
+    os.environ["OPENAI_API_TYPE"] = "azure"
+    os.environ["OPENAI_API_BASE"] = "https://oai-rlike-lab-shared.openai.azure.com/"
+    os.environ["OPENAI_API_KEY"] = "23f9d2509d884504881b33951e0b4aa6"
+    os.environ["OPENAI_API_VERSION"] = "2023-05-15"
+
+    MONGODB_USER = 'clusteradmin'
+    MONGODB_PWD = """"m'b2,gFPnyQ=Y&"""
+
+    mongo_conn = f'mongodb+srv://{MONGODB_USER}:{MONGODB_PWD}@hrchatbot-cosmosdb-rag.mongocluster.cosmos.azure.com/?tls=true&authMechanism=SCRAM-SHA-256&retrywrites=false&maxIdleTimeMS=120000'
+    mongo_client = pymongo.MongoClient(mongo_conn)
+
+    # create a database called TestDB
+    db = mongo_client['TestDB']
+
+    # Create collection if it doesn't exist
+    COLLECTION_NAME = "TestCol"
+
+    collection = db[COLLECTION_NAME]
+
+
+    # embedding model has to be the same as used for embedding the context docs
+    embed = OpenAIEmbeddings(
+        deployment="Rlike-text-embedding-ada-002",
+        chunk_size = 1
+    )
+
+
+
+    # Simple function to assist with vector search
+    def vector_search(query, num_results=3):
+        # Create embedding for query
+        query_embedding = embed.embed_documents([query])[0]
+
+        # json formatted pipeline to perform vector search on search index created for the cosmosdb collection
+        pipeline = [
+            {
+                '$search': {
+                    "cosmosSearch": {
+                        "vector": query_embedding,
+                        "path": "contentVector",
+                        "k": num_results
+                    },
+                    "returnStoredSource": True
+                }
+            }
+        ]
+
+        # Applying the pipeline to the collection and format the results
+        results = ''
+        for result in collection.aggregate(pipeline):
+            results = results + result['text'] + '\n\n'
+        
+        return results
+
+
+
+    # define the prompt template
+    template = """
+    You are a friendly AI assistant that kindly helps people find information. Only employees will be able to interact with you. Your goal is to provide information about HR related content written in different policies and help the employees to inform them about their rights and privileges. You retrieve these policies in Dutch or English from the context section, but you should always reply in Dutch, unless the question is asked in English. If the context doesn't allow you you are not confident to answer the question, ask the user to elaborate on the question or the subjects you do not understand. And if the context session does not contain the required content please inform the employee that the document does not contain the require information"
+    Context sections:
+
+    {context}
+    """
+
+    prompt = PromptTemplate(template=template, input_variables=["context"])
+
+    def Question_prompt(users_question):
+        # Do vector search for relevant docs
+        content_docs = vector_search(users_question,4)
+        # Fill prompt template with retrieved docs
+        prompt_text = prompt.format(context = content_docs)
+
+        llm = AzureChatOpenAI(
+            deployment_name="CcHR_Chatbot",
+            temperature=0.2
+            )
+            
+        # Messages in chat history
+        messages = [
+            SystemMessage(content=prompt_text),
+            HumanMessage(content=users_question),
+            ]
+            
+        QuestionAnswer = llm(messages)
+        return QuestionAnswer.content
+
+    
+    
+    # payload = {"name": messages[-1]["content"]}
+
+    # # Send a GET request to CUSTOM_AZURE_FUNCTION with the 'payload' as JSON
+    # azure_func_answer = json.loads(requests.get(CUSTOM_AZURE_FUNCTION, json=payload).text)["answer"]
+    # # Split 'azure_func_answer' into chunks using regular expressions
+
+    azure_func_answer_chunks = re.findall(r'\S+\s*|\s+', Question_prompt(messages[-1]["content"]))
 
     created = random.randint(10**(10-1), 10**10 - 1)
     id = "chatcmpl-" + ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(29))
@@ -338,7 +441,6 @@ def conversation_without_data(request_body):
                 "usage": None
             }
             response.append(dic)
-            print(response)
   
     history_metadata = request_body.get("history_metadata", {})
 
@@ -362,6 +464,10 @@ def conversation_without_data(request_body):
         return Response(stream_without_data(response, history_metadata), mimetype='text/event-stream')
 ## end of code that has been updated
 
+
+
+
+###
 @app.route("/conversation", methods=["GET", "POST"])
 def conversation():
     request_body = request.json

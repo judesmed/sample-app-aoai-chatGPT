@@ -8,3 +8,9 @@ langchain==0.0.274
 bs4==0.0.1
 urllib3==2.0.4
 pytest==7.4.0
+
+
+pymongo
+langchain==0.0.162 
+openai==0.27.7 
+tiktoken==0.4.0

@@ -5,3 +5,8 @@ azure-search-documents==11.4.0b6
 azure-storage-blob==12.17.0
 python-dotenv==1.0.0
 azure-cosmos==4.5.0
+
+pymongo
+langchain==0.0.162 
+openai==0.27.7 
+tiktoken==0.4.0
