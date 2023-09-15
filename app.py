@@ -338,6 +338,7 @@ def conversation_without_data(request_body):
                 "usage": None
             }
             response.append(dic)
+            print(response)
   
     history_metadata = request_body.get("history_metadata", {})
 
